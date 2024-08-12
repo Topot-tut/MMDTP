@@ -54,3 +54,7 @@ def load_prompt(name):
 
 class Dialog:
     pass
+
+
+def print_hello():
+    print("Hello")
