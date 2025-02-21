@@ -1,18 +1,24 @@
 import logging
 
-from aiogram.client import telegram
-from geopy import Nominatim
+import telegram
+from aiogram import Bot, Dispatcher
+from aiogram.types import Message
+
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputFile, ReplyKeyboardRemove
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, ConversationHandler, \
     ContextTypes, filters
 from telegram import InputMediaPhoto, InputMediaVideo
-from datetime import datetime, timedelta
+from datetime import datetime
 import urllib.parse
 import requests
 import re
 import pytz
-from PIL import Image
-import io
+
+import os
+
+YANDEX_API_KEY = os.getenv("YANDEX_API_KEY")
+CHANNEL_ID = os.getenv("CHANNEL_ID")
+ADMIN_IDS = os.getenv("ADMIN_IDS")
 
 # Enable logging
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
@@ -25,65 +31,54 @@ CHOOSING, SITUATION, ACCIDENT_SITUATION, LOCATION_CHOICE, LOCATION_COORDS, LOCAT
 user_data = {}
 post_count = 0
 
-YANDEX_API_KEY = 'e78167ef-aea5-4884-9812-a73f7f1a1e92'
-CHANNEL_ID = '-1002231302854'
 
 async def send_image_if_needed(context: ContextTypes.DEFAULT_TYPE):
+    """Проверка на необходимость отправки изображения в канал"""
     global post_count
     tz = pytz.timezone('Europe/Moscow')
     now = datetime.now(tz)
-    if post_count > 20 and now.hour >= 21:
-        post_count = 0  # Сбросить счетчик постов после отправки картинки
+    if post_count > 19 and now.hour >= 20:
+        post_count = 0
         with open("picture/S-L-Y.jpg", 'rb') as image:
-            await context.bot.send_photo(
-                chat_id=CHANNEL_ID,  # Ваш идентификатор канала
-                photo=InputFile(image)
-            )
+            await context.bot.send_photo(chat_id=CHANNEL_ID, photo=InputFile(image))
 
 def create_yandex_maps_point_url(latitude, longitude):
+    """Создание ссылки на Яндекс.Карты"""
     return f"https://yandex.ru/maps/?pt={longitude},{latitude}&z=14&l=map"
 
+
 def get_readable_address(lat, lon):
+    """Определение читаемого адреса по координатам через Яндекс API"""
     url = f"https://geocode-maps.yandex.ru/1.x/?apikey={YANDEX_API_KEY}&geocode={lon},{lat}&format=json"
     response = requests.get(url)
     response.raise_for_status()
     json_response = response.json()
+
     if json_response['response']['GeoObjectCollection']['featureMember']:
-        address_details = json_response['response']['GeoObjectCollection']['featureMember'][0]['GeoObject']['metaDataProperty'][
+        address_details = \
+        json_response['response']['GeoObjectCollection']['featureMember'][0]['GeoObject']['metaDataProperty'][
             'GeocoderMetaData']['Address']
         components = address_details['Components']
-        address_parts = []
-        seen_components = set()
-        for component in components:
-            name = component['name']
-            if component['kind'] in ['house', 'street', 'locality', 'province', 'country'] and name not in seen_components:
-                address_parts.append(name)
-                seen_components.add(name)
-        address_parts.reverse()  # Reverse the order of address components
-        return ", ".join(address_parts)
+        address_parts = [component['name'] for component in components if
+                         component['kind'] in ['house', 'street', 'locality', 'province', 'country']]
+        return ", ".join(reversed(address_parts))
+
     return "Адрес не найден"
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Начальный экран выбора типа происшествия"""
     user_id = update.effective_user.id
-    user_data[user_id] = {}
+    user_data[user_id] = {'admin_id': user_id}  # Запоминаем, кто создал пост
     keyboard = [
-        [
-            InlineKeyboardButton("ДТП", callback_data='ДТП'),
-            InlineKeyboardButton("Поломка", callback_data='Поломка')
-        ],
-        [
-            InlineKeyboardButton("Угон", callback_data='Угон'),
-            InlineKeyboardButton("Прочее", callback_data='Прочее')
-        ]
+        [InlineKeyboardButton("ДТП", callback_data='ДТП'), InlineKeyboardButton("Поломка", callback_data='Поломка')],
+        [InlineKeyboardButton("Угон", callback_data='Угон'), InlineKeyboardButton("Прочее", callback_data='Прочее')]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    try:
-        await update.message.reply_text('Что произошло?', reply_markup=reply_markup)
-    except telegram.error.Forbidden:
-        logger.warning(f"Bot was blocked by the user {update.effective_user.id}")
+    await update.message.reply_text('Что произошло?', reply_markup=reply_markup)
     return CHOOSING
 
 async def choosing(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Выбор конкретной ситуации"""
     query = update.callback_query
     user_id = update.effective_user.id
     await query.answer()
@@ -91,51 +86,31 @@ async def choosing(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
     if query.data == 'ДТП':
         keyboard = [
-            [
-                InlineKeyboardButton("мот", callback_data='мот'),
-                InlineKeyboardButton("мот/сим", callback_data='мот/сим'),
-                InlineKeyboardButton("мот/мот", callback_data='мот/мот')
-            ],
-            [
-                InlineKeyboardButton("мот/авто", callback_data='мот/авто'),
-                InlineKeyboardButton("мот/пеш", callback_data='мот/пеш'),
-                InlineKeyboardButton("Прочее", callback_data='Прочее')
-            ]
+            [InlineKeyboardButton("мот", callback_data='мот'), InlineKeyboardButton("мот/сим", callback_data='мот/сим')],
+            [InlineKeyboardButton("мот/мот", callback_data='мот/мот'), InlineKeyboardButton("мот/авто", callback_data='мот/авто')],
+            [InlineKeyboardButton("мот/пеш", callback_data='мот/пеш'), InlineKeyboardButton("Прочее", callback_data='Прочее')],
+            [InlineKeyboardButton("🔙 Назад", callback_data='back')]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        try:
-            await query.edit_message_text(text="Какая ситуация?", reply_markup=reply_markup)
-        except telegram.error.Forbidden:
-            logger.warning(f"Bot was blocked by the user {user_id}")
+        await query.edit_message_text(text="Какая ситуация?", reply_markup=reply_markup)
         return SITUATION
     else:
         user_data[user_id]['situation'] = ''
         user_data[user_id]['accident_situation'] = ''
-        keyboard = [
-            [InlineKeyboardButton("Координаты", callback_data='coords')],
-            [InlineKeyboardButton("Адрес", callback_data='address')]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        try:
-            await query.edit_message_text(text="Как хотите ввести место происшествия?", reply_markup=reply_markup)
-        except telegram.error.Forbidden:
-            logger.warning(f"Bot was blocked by the user {user_id}")
-        return LOCATION_CHOICE
+        return await location_choice(update, context)
 
 async def situation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Выбор степени происшествия"""
     query = update.callback_query
+    user_id = update.effective_user.id
     await query.answer()
-    user_data['situation'] = query.data
+    user_data[user_id]['situation'] = query.data
+
     keyboard = [
-        [
-            InlineKeyboardButton("Цел", callback_data='Цел'),
-            InlineKeyboardButton("Ушибся", callback_data='Ушибся')
-        ],
-        [
-            InlineKeyboardButton("Ранен", callback_data='Ранен'),
-            InlineKeyboardButton("Летально", callback_data='Летально'),
-            InlineKeyboardButton("Прочее", callback_data='Прочее')
-        ]
+        [InlineKeyboardButton("Цел", callback_data='Цел'), InlineKeyboardButton("Ушибся", callback_data='Ушибся')],
+        [InlineKeyboardButton("Ранен", callback_data='Ранен'), InlineKeyboardButton("Летально", callback_data='Летально')],
+        [InlineKeyboardButton("Прочее", callback_data='Прочее')],
+        [InlineKeyboardButton("🔙 Назад", callback_data='back')]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     await query.edit_message_text(text="Какое состояние?", reply_markup=reply_markup)
@@ -255,109 +230,125 @@ async def received_comment(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         logger.warning(f"Bot was blocked by the user {user_id}")
     return PHOTO
 
+
+async def send_image_if_needed(context: ContextTypes.DEFAULT_TYPE):
+    """Проверка на необходимость отправки изображения в канал"""
+    global post_count
+    tz = pytz.timezone('Europe/Moscow')
+    now = datetime.now(tz)
+    if post_count > 20 and now.hour >= 21:
+        post_count = 0
+        with open("picture/S-L-Y.jpg", 'rb') as image:
+            await context.bot.send_photo(chat_id=CHANNEL_ID, photo=InputFile(image))
+
 async def photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Запрос на добавление фото"""
     query = update.callback_query
     user_id = update.effective_user.id
     await query.answer()
-    if query.data == 'Да':
-        keyboard = [
-            [InlineKeyboardButton("Фото", callback_data='add_photo')],
-            [InlineKeyboardButton("Видео", callback_data='add_video')],
-            [InlineKeyboardButton("Завершить", callback_data='done')]
-        ]
-        try:
-            await query.edit_message_text(text="Загрузите медиа файлы:", reply_markup=InlineKeyboardMarkup(keyboard))
-        except telegram.error.Forbidden:
-            logger.warning(f"Bot was blocked by the user {user_id}")
-        return PHOTO
-    elif query.data == 'Нет':
-        user_data[user_id]['photo'] = []
-        user_data[user_id]['video'] = []
-        return await confirm_post(update, context)
 
-async def add_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    query = update.callback_query
-    await query.answer()
-    try:
-        await query.edit_message_text(text="Отправьте фото:")
-    except telegram.error.Forbidden:
-        logger.warning(f"Bot was blocked by the user {update.effective_user.id}")
+    keyboard = [
+        [InlineKeyboardButton("Добавить фото", callback_data='add_photo')],
+        [InlineKeyboardButton("Добавить видео", callback_data='add_video')],
+        [InlineKeyboardButton("Пропустить", callback_data='skip_media')],
+        [InlineKeyboardButton("🔙 Назад", callback_data='back')]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await query.edit_message_text(text="Хотите добавить медиафайлы?", reply_markup=reply_markup)
     return PHOTO
 
-async def no_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    query = update.callback_query
-    user_id = update.effective_user.id
-    await query.answer()
-    user_data[user_id]['photo'] = []
-    user_data[user_id]['video'] = []
-    return await confirm_post(update, context)
-
-async def add_video(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+async def add_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Ожидание загрузки фото"""
     query = update.callback_query
     await query.answer()
-    try:
-        await query.edit_message_text(text="Отправьте видео:")
-    except telegram.error.Forbidden:
-        logger.warning(f"Bot was blocked by the user {update.effective_user.id}")
-    return VIDEO  # Возвращаем правильное состояние
+    await query.edit_message_text(text="Отправьте фото.")
+    return PHOTO
 
 async def received_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Обработка полученного фото"""
     user_id = update.effective_user.id
     photo_file = await update.message.photo[-1].get_file()
     user_data[user_id].setdefault('photo', []).append(photo_file.file_id)
-    try:
-        await update.message.reply_text("Фото добавлено. Загрузите еще или нажмите /done если закончено.")
-    except logging.error.Forbidden:
-        logger.warning(f"Bot was blocked by the user {user_id}")
+
+    keyboard = [
+        [InlineKeyboardButton("Добавить еще фото", callback_data='add_photo')],
+        [InlineKeyboardButton("Добавить видео", callback_data='add_video')],
+        [InlineKeyboardButton("Завершить", callback_data='done')],
+        [InlineKeyboardButton("🔙 Назад", callback_data='back')]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text("Фото добавлено. Что делаем дальше?", reply_markup=reply_markup)
     return PHOTO
 
+async def add_video(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Запрос на добавление видео"""
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text(text="Отправьте видео.")
+    return VIDEO
+
 async def received_video(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Обработка полученного видео"""
     user_id = update.effective_user.id
     video_file = await update.message.video.get_file()
     user_data[user_id].setdefault('video', []).append(video_file.file_id)
-    try:
-        await update.message.reply_text("Видео добавлено. Загрузите еще или нажмите /done если закончено.")
-    except logging.error.Forbidden:
-        logger.warning(f"Bot was blocked by the user {user_id}")
-    return PHOTO
+
+    keyboard = [
+        [InlineKeyboardButton("Добавить еще видео", callback_data='add_video')],
+        [InlineKeyboardButton("Добавить фото", callback_data='add_photo')],
+        [InlineKeyboardButton("Завершить", callback_data='done')],
+        [InlineKeyboardButton("🔙 Назад", callback_data='back')]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text("Видео добавлено. Что делаем дальше?", reply_markup=reply_markup)
+    return VIDEO
+
+async def skip_media(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Пропуск добавления медиа"""
+    query = update.callback_query
+    await query.answer()
+    user_id = update.effective_user.id
+    user_data[user_id]['photo'] = []
+    user_data[user_id]['video'] = []
+    return await done(update, context)
 
 async def done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Финальное подтверждение перед отправкой"""
     user_id = update.effective_user.id
+    username = update.effective_user.username
 
-    # Подготовка текста поста для подтверждения
     photos = user_data[user_id].get('photo', [])
     videos = user_data[user_id].get('video', [])
-    comment_text = user_data[user_id].get('comment', '') or ''
+    comment_text = user_data[user_id].get('comment', '')
     location = user_data[user_id].get('location', None)
     readable_address = user_data[user_id].get('readable_address', 'Адрес не найден')
-    if location:
-        end_latitude, end_longitude = location
-        yandex_maps_url = f"https://yandex.ru/maps/?pt={end_longitude},{end_latitude}&z=14&l=map"
-    else:
-        yandex_maps_url = "Не указано"
+
+    yandex_maps_url = f"https://yandex.ru/maps/?pt={location[1]},{location[0]}&z=14&l=map" if location else "Не указано"
 
     parts = [
-        user_data[user_id]['type'],
-        user_data[user_id].get('situation', '') or '',
-        user_data[user_id].get('accident_situation', '') or '',
-        readable_address
+        f"Тип: {user_data[user_id]['type']}",
+        f"Ситуация: {user_data[user_id].get('situation', 'Не указано')}",
+        f"Состояние: {user_data[user_id].get('accident_situation', 'Не указано')}",
+        f"Адрес: {readable_address}",
+        f"Позиция: {yandex_maps_url}",
+        f"Комментарий: {comment_text}",
+        f"Дата и время: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+        f"Создал: @{username} (ID: {user_id})"
     ]
-    parts = [part for part in parts if part]  # Удаляем пустые части
-    summary = ", ".join(parts)
-    summary += f"\nПозиция: {yandex_maps_url}\n"
-    summary += f"Комментарий: {comment_text}\n"
-    summary += f"Дата и время: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-    summary += f"Пользователь: {update.effective_user.username}"
 
-    # Показать текст поста и предложить подтвердить или редактировать
+    parts = [part for part in parts if "Не указано" not in part]
+    summary = "\n".join(parts)
+
     await update.message.reply_text(
         text=summary,
         reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("Подтвердить", callback_data='confirm')],
-            [InlineKeyboardButton("Редактировать", callback_data='edit')],
-            [InlineKeyboardButton("Отменить", callback_data='cancel')]
+            [InlineKeyboardButton("✅ Подтвердить", callback_data='confirm')],
+            [InlineKeyboardButton("✏️ Редактировать", callback_data='edit')],
+            [InlineKeyboardButton("❌ Отменить", callback_data='cancel')],
+            [InlineKeyboardButton("🔙 Назад", callback_data='back')]
         ])
     )
+
     return CONFIRM
 
 
