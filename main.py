@@ -34,6 +34,12 @@ CHOOSING, SITUATION, ACCIDENT_SITUATION, LOCATION_CHOICE, LOCATION_COORDS, LOCAT
 user_data = {}
 post_count = 0
 
+def create_yandex_google_links(latitude, longitude):
+    """Создает ссылки на Яндекс и Google карты по координатам."""
+    yandex = f"https://yandex.ru/maps/?pt={longitude},{latitude}&z=14&l=map"
+    google = f"https://www.google.com/maps/search/?api=1&query={latitude},{longitude}"
+    return yandex, google
+
 
 def create_map_url(latitude, longitude):
     """Создает ссылку на OpenStreetMap для отображения местоположения."""
@@ -456,34 +462,41 @@ async def done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     location = user_data[user_id].get('location', None)
     readable_address = user_data[user_id].get('readable_address', 'Адрес не найден')
 
-    # Используем OpenStreetMap
-    map_url = create_map_url(location[0], location[1]) if location else "Не указано"
-
-    # Создаем список частей сообщения
     parts = [
         f"Тип: {user_data[user_id]['type']}",
         f"Ситуация: {user_data[user_id].get('situation', 'Не указано')}",
         f"Состояние: {user_data[user_id].get('accident_situation', 'Не указано')}",
         f"Адрес: {readable_address}",
-        f"Позиция: {map_url}",
-        f"Комментарий: {comment_text}",
-        f"Дата и время: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-        f"Создал: @{username} (ID: {user_id})"
     ]
 
-    # Фильтруем, убирая пустые значения
-    parts = [part for part in parts if "Не указано" not in part]
+    if location:
+        latitude, longitude = location
+        yandex_link = f"https://yandex.ru/maps/?pt={longitude},{latitude}&z=14&l=map"
+        google_link = f"https://www.google.com/maps/search/?api=1&query={latitude},{longitude}"
+        parts.append(f"Яндекс карты: {yandex_link}")
+        parts.append(f"Google карты: {google_link}")
+    else:
+        parts.append("Координаты: Не указаны")
+
+    parts.append(f"Комментарий: {comment_text}")
+    parts.append(f"Дата и время: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    parts.append(f"Создал: @{username} (ID: {user_id})")
+
     summary = "\n".join(parts)
 
-    # Добавляем кнопку "Назад"
     keyboard = [
         [InlineKeyboardButton("✅ Подтвердить", callback_data='confirm')],
         [InlineKeyboardButton("✏️ Редактировать", callback_data='edit')],
         [InlineKeyboardButton("❌ Отменить", callback_data='cancel')],
-        [InlineKeyboardButton("🔙 Назад", callback_data='back_to_photo')]  # Добавлена кнопка "Назад"
+        [InlineKeyboardButton("⬅️ Назад", callback_data='back_to_photo')]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text(text=summary, reply_markup=reply_markup)
+
+    if update.message:
+        await update.message.reply_text(text=summary, reply_markup=reply_markup)
+    elif update.callback_query:
+        await update.callback_query.message.reply_text(text=summary, reply_markup=reply_markup)
+
     return CONFIRM
 
 
@@ -495,45 +508,47 @@ async def confirm_post(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     location = user_data[user_id].get('location', None)
     readable_address = user_data[user_id].get('readable_address', 'Адрес не найден')
 
-    # Используем OpenStreetMap
-    map_url = create_map_url(location[0], location[1]) if location else "Не указано"
-
     parts = [
         user_data[user_id]['type'],
         user_data[user_id].get('situation', '') or '',
         user_data[user_id].get('accident_situation', '') or '',
         readable_address
     ]
-    parts = [part for part in parts if part]  # Удаляем пустые части
-    summary = ", ".join(parts)
-    summary += f"\nПозиция: {map_url}\n"
-    summary += f"Комментарий: {comment_text}\n"
-    summary += f"Дата и время: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-    summary += f"Пользователь: {update.effective_user.username}"
+
+    if location:
+        latitude, longitude = location
+        yandex_link = f"https://yandex.ru/maps/?pt={longitude},{latitude}&z=14&l=map"
+        google_link = f"https://www.google.com/maps/search/?api=1&query={latitude},{longitude}"
+        parts.append(f"Яндекс карты: {yandex_link}")
+        parts.append(f"Google карты: {google_link}")
+    else:
+        parts.append("Координаты: Не указаны")
+
+    parts.append(f"Комментарий: {comment_text}")
+    parts.append(f"Дата и время: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    parts.append(f"Пользователь: {update.effective_user.username}")
+
+    summary = "\n".join(part for part in parts if part)
 
     try:
-        # Если есть фотографии, отправляем их по одному
         if photos:
             for photo in photos:
                 await context.bot.send_photo(chat_id=CHANNEL_ID, photo=photo, caption=summary, parse_mode="Markdown")
-                summary = ""  # Убираем подпись, чтобы она не повторялась на всех фото
-
-        # Если есть видео, отправляем их по одному
+                summary = ""  # Только для первого медиафайла
         if videos:
             for video in videos:
                 await context.bot.send_video(chat_id=CHANNEL_ID, video=video, caption=summary, parse_mode="Markdown")
-                summary = ""  # Убираем подпись, чтобы она не повторялась на всех видео
-
-        # Если нет медиафайлов, отправляем текстовый пост
+                summary = ""
         if not photos and not videos:
             await context.bot.send_message(chat_id=CHANNEL_ID, text=summary, parse_mode="Markdown")
 
         await update.callback_query.message.reply_text(text="Пост отправлен!")
     except Exception as e:
-        logger.error("Failed to send media to channel: %s", str(e))
+        logger.error(f"Ошибка отправки медиа: {str(e)}")
         await update.callback_query.message.reply_text(text="Ошибка при отправке медиа в канал.")
 
     user_data[user_id].clear()
+    global post_count
     post_count += 1
     await send_image_if_needed(context)
 
@@ -609,36 +624,57 @@ async def confirmed(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     comment_text = user_data[user_id].get('comment', '') or ''
     location = user_data[user_id].get('location', None)
     readable_address = user_data[user_id].get('readable_address', 'Адрес не найден')
+    edited_message = user_data[user_id].get('edit_message', None)
 
-    # Используем OpenStreetMap
-    map_url = create_map_url(location[0], location[1]) if location else "Не указано"
-
-    summary = user_data[user_id].get('edit_message', None)
-    if not summary:
+    if edited_message:
+        summary = edited_message
+    else:
         parts = [
             user_data[user_id]['type'],
-            user_data[user_id].get('situation', '') or '',
-            user_data[user_id].get('accident_situation', '') or '',
+            user_data[user_id].get('situation', ''),
+            user_data[user_id].get('accident_situation', ''),
             readable_address
         ]
-        parts = [part for part in parts if part]  # Remove empty parts
+        parts = [part for part in parts if part]
+
         summary = ", ".join(parts)
-        summary += f"\nПозиция: {map_url}\n"
-        summary += f"Комментарий: {comment_text}\n"
-        summary += f"Дата и время: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-        summary += f"Пользователь: {update.effective_user.username}"
 
-    media_group = [InputMediaPhoto(photo) for photo in photos]
-    media_group.extend([InputMediaVideo(video) for video in videos])
+        if location:
+            latitude, longitude = location
+            yandex_link = f"https://yandex.ru/maps/?pt={longitude},{latitude}&z=14&l=map"
+            google_link = f"https://www.google.com/maps/search/?api=1&query={latitude},{longitude}"
+            summary += f"\nЯндекс карты: {yandex_link}"
+            summary += f"\nGoogle карты: {google_link}"
 
-    if media_group:
-        media_group[0] = InputMediaPhoto(media_group[0].media, caption=summary, parse_mode="Markdown")
+        if comment_text:
+            summary += f"\nКомментарий: {comment_text}"
+
+        summary += f"\nДата и время: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        summary += f"\nПользователь: @{update.effective_user.username}"
 
     try:
-        await context.bot.send_media_group(chat_id=CHANNEL_ID, media=media_group)
+        media_group = []
+        if photos:
+            for idx, photo in enumerate(photos):
+                if idx == 0:
+                    media_group.append(InputMediaPhoto(photo, caption=summary, parse_mode="Markdown"))
+                else:
+                    media_group.append(InputMediaPhoto(photo))
+        if videos:
+            for idx, video in enumerate(videos):
+                if idx == 0 and not media_group:
+                    media_group.append(InputMediaVideo(video, caption=summary, parse_mode="Markdown"))
+                else:
+                    media_group.append(InputMediaVideo(video))
+
+        if media_group:
+            await context.bot.send_media_group(chat_id=CHANNEL_ID, media=media_group)
+        else:
+            await context.bot.send_message(chat_id=CHANNEL_ID, text=summary, parse_mode="Markdown")
+
         await query.edit_message_text(text="Пост отправлен!")
     except Exception as e:
-        logger.error("Failed to send media group to channel: %s", str(e))
+        logger.error(f"Ошибка отправки медиа группы в канал: {str(e)}")
         await query.edit_message_text(text="Ошибка при отправке медиа группы в канал.")
 
     user_data[user_id].clear()
@@ -693,6 +729,7 @@ def main() -> None:
                 CallbackQueryHandler(photo, pattern='^Да$'),
                 CallbackQueryHandler(add_photo, pattern='add_photo'),
                 CallbackQueryHandler(add_video, pattern='add_video'),
+                CallbackQueryHandler(done, pattern='^done$'),
                 MessageHandler(filters.PHOTO, received_photo),
                 MessageHandler(filters.VIDEO, received_video),
                 CallbackQueryHandler(skip_media, pattern='Нет'),
