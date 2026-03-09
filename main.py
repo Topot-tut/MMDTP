@@ -459,12 +459,21 @@ from datetime import datetime
 
 def build_post_text(user_entry: dict, user_id: int) -> str:
     parts = []
+
+    parts.append(f"Дата и время: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+
     if user_entry.get('type'):
         parts.append(user_entry['type'])
+
     if user_entry.get('situation'):
         parts.append(user_entry['situation'])
+
     if user_entry.get('accident_situation'):
         parts.append(user_entry['accident_situation'])
+
+    if user_entry.get('comment'):
+        parts.append(user_entry['comment'])
+
     if user_entry.get('readable_address'):
         parts.append(user_entry['readable_address'])
 
@@ -475,16 +484,13 @@ def build_post_text(user_entry: dict, user_id: int) -> str:
         parts.append(f"Яндекс карты: {yandex_link}")
         parts.append(f"Google карты: {google_link}")
 
-    if user_entry.get('comment'):
-        parts.append(user_entry['comment'])
-
-    parts.append(f"Дата и время: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-
-    username = user_entry.get('username', 'Неизвестный пользователь')
-    parts.append(f"Пользователь: @{username} (ID: {user_id})")
+    username = user_entry.get('username')
+    if username:
+        parts.append(f"ОПЕРАТОР: @{username}")
+    else:
+        parts.append("ОПЕРАТОР: неизвестен")
 
     return "\n".join(parts)
-
 
 async def done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = update.effective_user.id
