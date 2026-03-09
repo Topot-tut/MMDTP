@@ -14,6 +14,7 @@ from telegram import InputMediaPhoto, InputMediaVideo
 from datetime import datetime
 from config import OPEN_CAGE_API_KEY
 from dotenv import load_dotenv
+
 YANDEX_API_KEY = os.getenv("YANDEX_API_KEY")
 CHANNEL_ID = os.getenv("CHANNEL_ID")
 ADMIN_IDS = os.getenv("ADMIN_IDS")
@@ -23,6 +24,9 @@ load_dotenv()  # Загружаем переменные окружения
 
 # Enable logging
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("telegram.bot").setLevel(logging.WARNING)
+logging.getLogger("apscheduler").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 
@@ -81,10 +85,12 @@ def get_readable_address(lat, lon):
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Начало выбора типа происшествия"""
     user_id = update.effective_user.id
-    user_data[user_id] = {'admin_id': user_id}  # Сохранение ID создателя
-
+    username = update.effective_user.username
+    user_data[user_id] = {
+        'admin_id': user_id,
+        'username': username
+    }
     keyboard = [
         [InlineKeyboardButton("ДТП", callback_data='ДТП'), InlineKeyboardButton("Поломка", callback_data='Поломка')],
         [InlineKeyboardButton("Угон", callback_data='Угон'), InlineKeyboardButton("Прочее", callback_data='Прочее')]
@@ -335,7 +341,7 @@ async def received_comment(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     user_data[user_id]['comment'] = update.message.text  # Сохраняем комментарий
 
     await update.message.reply_text(
-        text="📸 Хотите добавить фото?",
+        text="📸 Хотите добавить медиа?",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("✅ Да", callback_data='Да')],
             [InlineKeyboardButton("❌ Нет", callback_data='Нет')],
@@ -383,15 +389,14 @@ async def photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 
 async def add_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Ожидание загрузки фото пользователем"""
     query = update.callback_query
     await query.answer()
-    await query.edit_message_text(text="📷 Отправьте фото.")
+    await query.edit_message_text(text="Отправьте фото:")
     return PHOTO
 
 
 async def received_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Обрабатывает загруженное пользователем фото"""
+    """Получение фото от пользователя"""
     user_id = update.effective_user.id
     photo_file = await update.message.photo[-1].get_file()
     user_data[user_id].setdefault('photo', []).append(photo_file.file_id)
@@ -403,41 +408,43 @@ async def received_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         [InlineKeyboardButton("⬅️ Назад", callback_data='back')]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("📸 Фото добавлено. Что делаем дальше?", reply_markup=reply_markup)
+    await update.message.reply_text("Фото добавлено. Что делаем дальше?", reply_markup=reply_markup)
     return PHOTO
 
 
+async def send_video_safe(bot, chat_id, video_file_id, caption=None):
+    """Безопасная отправка видео: если видео большое — отправляем как документ"""
+    try:
+        await bot.send_video(chat_id=chat_id, video=video_file_id, caption=caption, parse_mode="Markdown")
+    except Exception as e:
+        logger.warning(f"Не удалось отправить как видео, пробуем как документ: {e}")
+        try:
+            await bot.send_document(chat_id=chat_id, document=video_file_id, caption=caption, parse_mode="Markdown")
+        except Exception as e2:
+            logger.error(f"Не удалось отправить как документ: {e2}")
+
+
 async def add_video(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Запрашивает у пользователя видео"""
     query = update.callback_query
     await query.answer()
-    await query.edit_message_text(text="🎥 Отправьте видео.")
+    await query.edit_message_text(text="Отправьте видео:")
     return VIDEO
 
 async def received_video(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Обрабатывает загруженное пользователем видео и логирует возможные ошибки"""
+    """Получение видео от пользователя"""
     user_id = update.effective_user.id
+    video_file = await update.message.video.get_file()
+    user_data[user_id].setdefault('video', []).append(video_file.file_id)
 
-    try:
-        video_file = await update.message.video.get_file()
-        user_data[user_id].setdefault('video', []).append(video_file.file_id)
-        logger.info(f"✅ Видео успешно добавлено пользователем {user_id}: {video_file.file_id}")
-
-        keyboard = [
-            [InlineKeyboardButton("📷 Добавить фото", callback_data='add_photo')],
-            [InlineKeyboardButton("🎥 Добавить ещё видео", callback_data='add_video')],
-            [InlineKeyboardButton("✅ Завершить", callback_data='done')],
-            [InlineKeyboardButton("⬅️ Назад", callback_data='back')]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await update.message.reply_text("🎥 Видео добавлено. Что делаем дальше?", reply_markup=reply_markup)
-
-        return VIDEO
-
-    except Exception as e:
-        logger.error(f"❌ Ошибка при загрузке видео пользователем {user_id}: {str(e)}")
-        await update.message.reply_text("🚨 Произошла ошибка при загрузке видео. Попробуйте снова.")
-        return VIDEO
+    keyboard = [
+        [InlineKeyboardButton("🎥 Добавить ещё видео", callback_data='add_video')],
+        [InlineKeyboardButton("📷 Добавить фото", callback_data='add_photo')],
+        [InlineKeyboardButton("✅ Завершить", callback_data='done')],
+        [InlineKeyboardButton("⬅️ Назад", callback_data='back')]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text("Видео добавлено. Что делаем дальше?", reply_markup=reply_markup)
+    return PHOTO
 
 
 async def skip_media(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -450,39 +457,44 @@ async def skip_media(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     return await done(update, context)
 
 
+from datetime import datetime
+
+
+def build_post_text(user_entry: dict, user_id: int) -> str:
+    parts = []
+    if user_entry.get('type'):
+        parts.append(user_entry['type'])
+    if user_entry.get('situation'):
+        parts.append(user_entry['situation'])
+    if user_entry.get('accident_situation'):
+        parts.append(user_entry['accident_situation'])
+    if user_entry.get('readable_address'):
+        parts.append(user_entry['readable_address'])
+
+    if 'location' in user_entry:
+        lat, lon = user_entry['location']
+        yandex_link = f"https://yandex.ru/maps/?pt={lon},{lat}&z=14&l=map"
+        google_link = f"https://www.google.com/maps/search/?api=1&query={lat},{lon}"
+        parts.append(f"Яндекс карты: {yandex_link}")
+        parts.append(f"Google карты: {google_link}")
+
+    if user_entry.get('comment'):
+        parts.append(user_entry['comment'])
+
+    parts.append(f"Дата и время: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+
+    username = user_entry.get('username', 'Неизвестный пользователь')
+    parts.append(f"Пользователь: @{username}")
+
+    return "\n".join(parts)
+
+
 async def done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = update.effective_user.id
     username = update.effective_user.username
     user_data[user_id]['admin_id'] = user_id  # Запоминаем ID создателя поста
 
-    # Достаем данные из user_data
-    photos = user_data[user_id].get('photo', [])
-    videos = user_data[user_id].get('video', [])
-    comment_text = user_data[user_id].get('comment', '') or ''
-    location = user_data[user_id].get('location', None)
-    readable_address = user_data[user_id].get('readable_address', 'Адрес не найден')
-
-    parts = [
-        f"Тип: {user_data[user_id]['type']}",
-        f"Ситуация: {user_data[user_id].get('situation', 'Не указано')}",
-        f"Состояние: {user_data[user_id].get('accident_situation', 'Не указано')}",
-        f"Адрес: {readable_address}",
-    ]
-
-    if location:
-        latitude, longitude = location
-        yandex_link = f"https://yandex.ru/maps/?pt={longitude},{latitude}&z=14&l=map"
-        google_link = f"https://www.google.com/maps/search/?api=1&query={latitude},{longitude}"
-        parts.append(f"Яндекс карты: {yandex_link}")
-        parts.append(f"Google карты: {google_link}")
-    else:
-        parts.append("Координаты: Не указаны")
-
-    parts.append(f"Комментарий: {comment_text}")
-    parts.append(f"Дата и время: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    parts.append(f"Создал: @{username} (ID: {user_id})")
-
-    summary = "\n".join(parts)
+    summary = build_post_text(user_data[user_id], user_id)
 
     keyboard = [
         [InlineKeyboardButton("✅ Подтвердить", callback_data='confirm')],
@@ -502,51 +514,51 @@ async def done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 async def confirm_post(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = update.effective_user.id
-    photos = user_data[user_id].get('photo', [])
-    videos = user_data[user_id].get('video', [])
-    comment_text = user_data[user_id].get('comment', '') or ''
-    location = user_data[user_id].get('location', None)
-    readable_address = user_data[user_id].get('readable_address', 'Адрес не найден')
-
-    parts = [
-        user_data[user_id]['type'],
-        user_data[user_id].get('situation', '') or '',
-        user_data[user_id].get('accident_situation', '') or '',
-        readable_address
-    ]
-
-    if location:
-        latitude, longitude = location
-        yandex_link = f"https://yandex.ru/maps/?pt={longitude},{latitude}&z=14&l=map"
-        google_link = f"https://www.google.com/maps/search/?api=1&query={latitude},{longitude}"
-        parts.append(f"Яндекс карты: {yandex_link}")
-        parts.append(f"Google карты: {google_link}")
-    else:
-        parts.append("Координаты: Не указаны")
-
-    parts.append(f"Комментарий: {comment_text}")
-    parts.append(f"Дата и время: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    parts.append(f"Пользователь: {update.effective_user.username}")
-
-    summary = "\n".join(part for part in parts if part)
+    user_entry = user_data[user_id]
+    photos = user_entry.get('photo', [])
+    videos = user_entry.get('video', [])
+    summary = build_post_text(user_entry, user_id)
 
     try:
-        if photos:
-            for photo in photos:
-                await context.bot.send_photo(chat_id=CHANNEL_ID, photo=photo, caption=summary, parse_mode="Markdown")
-                summary = ""  # Только для первого медиафайла
+        # 1. Сначала отправляем видео
         if videos:
             for video in videos:
-                await context.bot.send_video(chat_id=CHANNEL_ID, video=video, caption=summary, parse_mode="Markdown")
-                summary = ""
+                await context.bot.send_video(
+                    chat_id=CHANNEL_ID,
+                    video=video,
+                    caption=f"🎥 Видео с места происшествия: {user_entry.get('readable_address', 'Адрес не найден')}",
+                    parse_mode="Markdown"
+                )
+
+        # 2. Потом отправляем ВСЕ фото одной медиа-группой с текстом под всей группой
+        if photos:
+            media = []
+            for idx, photo in enumerate(photos):
+                if idx == 0:
+                    media.append(InputMediaPhoto(media=photo, caption=summary, parse_mode="Markdown"))
+                else:
+                    media.append(InputMediaPhoto(media=photo))
+
+            await context.bot.send_media_group(
+                chat_id=CHANNEL_ID,
+                media=media
+            )
+
+        # 3. Если вообще нет медиа
         if not photos and not videos:
-            await context.bot.send_message(chat_id=CHANNEL_ID, text=summary, parse_mode="Markdown")
+            await context.bot.send_message(
+                chat_id=CHANNEL_ID,
+                text=summary,
+                parse_mode="Markdown"
+            )
 
-        await update.callback_query.message.reply_text(text="Пост отправлен!")
+        await update.callback_query.message.reply_text("Пост отправлен!")
+
     except Exception as e:
-        logger.error(f"Ошибка отправки медиа: {str(e)}")
-        await update.callback_query.message.reply_text(text="Ошибка при отправке медиа в канал.")
+        logger.error(f"Ошибка отправки медиа-группы: {str(e)}")
+        await update.callback_query.message.reply_text("Ошибка при отправке медиа.")
 
+    # Очищаем данные пользователя
     user_data[user_id].clear()
     global post_count
     post_count += 1
@@ -614,70 +626,58 @@ async def received_edit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 
 
 async def confirmed(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    global post_count
     user_id = update.effective_user.id
     query = update.callback_query
     await query.answer()
 
-    photos = user_data[user_id].get('photo', [])
-    videos = user_data[user_id].get('video', [])
-    comment_text = user_data[user_id].get('comment', '') or ''
-    location = user_data[user_id].get('location', None)
-    readable_address = user_data[user_id].get('readable_address', 'Адрес не найден')
-    edited_message = user_data[user_id].get('edit_message', None)
-
-    if edited_message:
-        summary = edited_message
-    else:
-        parts = [
-            user_data[user_id]['type'],
-            user_data[user_id].get('situation', ''),
-            user_data[user_id].get('accident_situation', ''),
-            readable_address
-        ]
-        parts = [part for part in parts if part]
-
-        summary = ", ".join(parts)
-
-        if location:
-            latitude, longitude = location
-            yandex_link = f"https://yandex.ru/maps/?pt={longitude},{latitude}&z=14&l=map"
-            google_link = f"https://www.google.com/maps/search/?api=1&query={latitude},{longitude}"
-            summary += f"\nЯндекс карты: {yandex_link}"
-            summary += f"\nGoogle карты: {google_link}"
-
-        if comment_text:
-            summary += f"\nКомментарий: {comment_text}"
-
-        summary += f"\nДата и время: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-        summary += f"\nПользователь: @{update.effective_user.username}"
+    user_entry = user_data.get(user_id, {})
+    photos = user_entry.get('photo', [])
+    videos = user_entry.get('video', [])
+    readable_address = user_entry.get('readable_address', 'Адрес не найден')
+    summary = build_post_text(user_entry, user_id)
 
     try:
-        media_group = []
+        # 1. Сначала отправляем видео с краткой подписью
+        if videos:
+            for video in videos:
+                await context.bot.send_video(
+                    chat_id=CHANNEL_ID,
+                    video=video,
+                    caption=f"🎥 Видео с места происшествия: {readable_address}",
+                    parse_mode="Markdown"
+                )
+
+        # 2. Потом отправляем группу фотографий с текстом только под первой
         if photos:
+            media = []
             for idx, photo in enumerate(photos):
                 if idx == 0:
-                    media_group.append(InputMediaPhoto(photo, caption=summary, parse_mode="Markdown"))
+                    media.append(InputMediaPhoto(media=photo, caption=summary, parse_mode="Markdown"))
                 else:
-                    media_group.append(InputMediaPhoto(photo))
-        if videos:
-            for idx, video in enumerate(videos):
-                if idx == 0 and not media_group:
-                    media_group.append(InputMediaVideo(video, caption=summary, parse_mode="Markdown"))
-                else:
-                    media_group.append(InputMediaVideo(video))
+                    media.append(InputMediaPhoto(media=photo))
 
-        if media_group:
-            await context.bot.send_media_group(chat_id=CHANNEL_ID, media=media_group)
-        else:
-            await context.bot.send_message(chat_id=CHANNEL_ID, text=summary, parse_mode="Markdown")
+            await context.bot.send_media_group(
+                chat_id=CHANNEL_ID,
+                media=media
+            )
 
-        await query.edit_message_text(text="Пост отправлен!")
+        # 3. Если нет фото и видео — отправляем только текст
+        if not photos and not videos:
+            await context.bot.send_message(
+                chat_id=CHANNEL_ID,
+                text=summary,
+                parse_mode="Markdown"
+            )
+
+        await query.edit_message_text("✅ Пост отправлен!")
+
     except Exception as e:
-        logger.error(f"Ошибка отправки медиа группы в канал: {str(e)}")
-        await query.edit_message_text(text="Ошибка при отправке медиа группы в канал.")
+        logger.error(f"Ошибка отправки медиа-группы: {str(e)}")
+        await query.edit_message_text("❌ Ошибка при отправке медиа.")
 
+    # Очищаем данные пользователя
     user_data[user_id].clear()
+    global post_count
     post_count += 1
     await send_image_if_needed(context)
 
